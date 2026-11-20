@@ -37,11 +37,68 @@ jobs:
       - name: GL test
         uses: TinyTapeout/tt-gds-action/gl_test@ttsky26d
 
-  viewer:
+  prepare_viewer:
     needs: gds
     runs-on: ubuntu-24.04
+    outputs:
+      artifact_name: ${{ steps.site.outputs.artifact_name }}
     permissions:
-      pages: write      # to deploy to Pages
-      id-token: write   # to verify the deployment originates from an appropriate source
+      actions: read
     steps:
-      - uses: TinyTapeout/tt-gds-action/viewer@ttsky26d
+      - name: Download layout files
+        uses: actions/download-artifact@v7
+        with:
+          name: tt_submission
+
+      - name: Download layout preview
+        uses: actions/download-artifact@v7
+        with:
+          name: gds_render
+          path: gh-pages
+
+      - name: Prepare viewer site
+        id: site
+        shell: bash
+        run: |
+          pdk=$(jq -er '.PDK | select(test("^[a-zA-Z0-9_]+$"))' tt_submission/pdk.json)
+          echo "artifact_name=github-pages-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          cp tt_submission/*.gds gh-pages/tinytapeout.gds
+          cp tt_submission/*.oas gh-pages/tinytapeout.oas
+          cat > gh-pages/index.html <<EOF
+          <!doctype html>
+          <html lang="en">
+          <meta charset="utf-8">
+          <title>Tiny Tapeout 3D Viewer</title>
+          <script>
+            const viewer = new URL("https://gds-viewer.tinytapeout.com/");
+            viewer.searchParams.set("pdk", "$pdk");
+            viewer.searchParams.set("model", new URL("tinytapeout.oas", document.baseURI));
+            location.replace(viewer);
+          </script>
+          </html>
+          EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          name: ${{ steps.site.outputs.artifact_name }}
+          path: gh-pages
+
+  viewer:
+    # Deploy after the upload job finishes so Pages can find the artifact.
+    needs: prepare_viewer
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy layout viewer
+        id: deployment
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: ${{ needs.prepare_viewer.outputs.artifact_name }}
+
+      - name: Link to the layout viewer
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: printf '[Open the 3D layout viewer](%s)\n' "$PAGE_URL" >> "$GITHUB_STEP_SUMMARY"
