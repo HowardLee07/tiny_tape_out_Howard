@@ -1,9 +1,10 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# 4-Channel Triggered Logic Analyzer
+# TinyScope-16
 
-Eight clocked samples of four digital inputs, captured on a CH0 rising edge.
-The sample at the selected address can be read after capture completes.
+A four-channel logic analyzer with a 16-sample circular buffer and selectable
+CH0 rising- or falling-edge trigger. Indexed readout returns eight samples
+before the trigger, the trigger sample, and seven samples after it.
 
 Run the RTL simulation with `cd test && make -B` with Icarus Verilog and cocotb available.
 

@@ -6,9 +6,11 @@ module logic_analyzer_4ch (
     input  wire       rst_n,
     input  wire       arm,
     input  wire [3:0] channels,
-    input  wire [2:0] rd_addr,
+    input  wire       trigger_falling,
+    input  wire [3:0] rd_addr,
     output wire [3:0] rd_data,
-    output wire       done
+    output wire       done,
+    output wire       ready_to_trigger
 );
     localparam [1:0] IDLE         = 2'b00,
                      WAIT_TRIGGER = 2'b01,
@@ -18,46 +20,64 @@ module logic_analyzer_4ch (
     reg [1:0] state;
     reg       prev_arm;
     reg       prev_ch0;
-    reg [2:0] wr_addr;
-    reg [3:0] samples [0:7];
+    reg       falling;
+    reg [3:0] wr_addr;
+    reg [3:0] start_addr;
+    reg [3:0] history_count;
+    reg [2:0] post_remaining;
+    reg [3:0] samples [0:15];
 
     wire arm_rise = arm & ~prev_arm;
-    wire trigger  = (state == WAIT_TRIGGER) & channels[0] & ~prev_ch0;
+    wire ch0_edge = (channels[0] != prev_ch0) & (channels[0] ^ falling);
+    wire trigger = ready_to_trigger & ch0_edge;
+    wire [3:0] physical_rd_addr = start_addr + rd_addr;
 
     always @(posedge clk) begin
         if (!rst_n) begin
-            state    <= IDLE;
-            prev_arm <= 1'b0;
-            prev_ch0 <= 1'b0;
-            wr_addr  <= 3'd0;
+            state          <= IDLE;
+            prev_arm       <= 1'b0;
+            prev_ch0       <= 1'b0;
+            falling        <= 1'b0;
+            wr_addr        <= 4'd0;
+            start_addr     <= 4'd0;
+            history_count  <= 4'd0;
+            post_remaining <= 3'd0;
         end else begin
             prev_arm <= arm;
             prev_ch0 <= channels[0];
 
-            // The trigger edge itself writes sample 0.
-            if (trigger || state == CAPTURE)
+            // Before the trigger, each write replaces the oldest sample.
+            if (state == WAIT_TRIGGER || state == CAPTURE) begin
                 samples[wr_addr] <= channels;
+                wr_addr <= wr_addr + 4'd1;
+            end
 
             case (state)
                 IDLE, READY: begin
                     if (arm_rise) begin
-                        wr_addr <= 3'd0;
-                        state   <= WAIT_TRIGGER;
+                        wr_addr       <= 4'd0;
+                        history_count <= 4'd0;
+                        falling       <= trigger_falling;
+                        state         <= WAIT_TRIGGER;
                     end
                 end
 
                 WAIT_TRIGGER: begin
                     if (trigger) begin
-                        wr_addr <= 3'd1;
-                        state   <= CAPTURE;
+                        // The current write is sample 8 in the final window.
+                        start_addr     <= wr_addr - 4'd8;
+                        post_remaining <= 3'd7;
+                        state          <= CAPTURE;
+                    end else if (!ready_to_trigger) begin
+                        history_count <= history_count + 4'd1;
                     end
                 end
 
                 CAPTURE: begin
-                    if (wr_addr == 3'd7)
+                    if (post_remaining == 3'd1)
                         state <= READY;
                     else
-                        wr_addr <= wr_addr + 3'd1;
+                        post_remaining <= post_remaining - 3'd1;
                 end
 
                 default: state <= IDLE;
@@ -65,8 +85,9 @@ module logic_analyzer_4ch (
         end
     end
 
-    assign done    = (state == READY);
-    assign rd_data = done ? samples[rd_addr] : 4'b0;
+    assign ready_to_trigger = (state == WAIT_TRIGGER) && (history_count == 4'd8);
+    assign done = (state == READY);
+    assign rd_data = done ? samples[physical_rd_addr] : 4'b0;
 endmodule
 
 `default_nettype wire

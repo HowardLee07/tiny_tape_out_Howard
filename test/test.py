@@ -1,19 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from random import Random
+
 import cocotb
 from cocotb.triggers import Timer
 
 DONE = 1 << 4
-DEMO_SAMPLES = (0x1, 0x2, 0x6, 0x4, 0xF, 0x8, 0xA, 0x3)
+READY = 1 << 5
 
 
-def inputs(channels=0, arm=0, address=0):
-    return (address << 5) | (arm << 4) | channels
+def drive_inputs(dut, channels=0, arm=0, address=0, falling=0):
+    dut.ui_in.value = ((address & 7) << 5) | (arm << 4) | channels
+    dut.uio_in.value = (falling << 1) | (address >> 3)
 
 
-async def tick(dut, channels=0, arm=0, address=0):
+async def tick(dut, **inputs):
     dut.clk.value = 0
-    dut.ui_in.value = inputs(channels, arm, address)
+    drive_inputs(dut, **inputs)
     await Timer(20, unit="ns")
     dut.clk.value = 1
     await Timer(20, unit="ns")
@@ -22,7 +25,6 @@ async def tick(dut, channels=0, arm=0, address=0):
 
 async def reset(dut):
     dut.ena.value = 1
-    dut.uio_in.value = 0
     dut.rst_n.value = 0
     assert await tick(dut) == 0
     dut.rst_n.value = 1
@@ -33,64 +35,78 @@ async def reset(dut):
 
 async def read_capture(dut, expected):
     dut.clk.value = 0
-    for address, sample in reversed(list(enumerate(expected))):
-        dut.ui_in.value = inputs(address=address)
+    # Read addresses in reverse order without clocking the capture engine.
+    for address in range(15, -1, -1):
+        drive_inputs(dut, address=address)
         await Timer(20, unit="ns")
-        assert int(dut.uo_out.value) == (DONE | sample), f"Wrong sample at address {address}"
+        assert int(dut.uo_out.value) == (DONE | expected[address]), (
+            f"Wrong sample at address {address}, expected {expected[address]:x}"
+        )
 
 
 @cocotb.test()
-async def test_trigger_capture_and_rearm(dut):
+async def test_both_edges_at_every_ring_address(dut):
     await reset(dut)
+    rng = Random(16)
 
-    # A rise on the same edge as ARM does not start the recording.
-    assert await tick(dut, channels=0x1, arm=1) == 0
-    for _ in range(3):
-        assert await tick(dut, channels=0xF, arm=1) == 0
+    for falling in (0, 1):
+        # Offsets 8 through 23 cover every trigger write address modulo 16.
+        for history_length in range(8, 24):
+            assert await tick(dut, arm=1, falling=falling) == 0
+            history = []
+            for index in range(history_length):
+                # During prefill, deliberately present qualifying edges. After
+                # prefill, hold CH0 opposite the requested trigger level.
+                ch0 = (index % 2) ^ falling if index < 7 else falling
+                sample = (rng.randrange(8) << 1) | ch0
+                history.append(sample)
+                status = await tick(dut, channels=sample, falling=1 - falling)
+                assert status == (READY if index >= 7 else 0)
 
-    assert await tick(dut, channels=0x8, arm=1) == 0
-    for address, sample in enumerate(DEMO_SAMPLES):
-        # A second ARM edge while capturing must be ignored.
-        arm = int(address != 1)
-        status = await tick(dut, channels=sample, arm=arm, address=0)
-        expected = (DONE | DEMO_SAMPLES[0]) if address == 7 else 0
-        assert status == expected, f"Unexpected output after capturing sample {address}"
-
-    # Continued clocks and a held ARM must not overwrite the record.
-    for channels in (0xF, 0x0, 0xF):
-        assert await tick(dut, channels=channels, arm=1) == (DONE | DEMO_SAMPLES[0])
-    await read_capture(dut, DEMO_SAMPLES)
-
-    assert await tick(dut, channels=0, arm=0) == (DONE | DEMO_SAMPLES[0])
-    assert await tick(dut, channels=0, arm=1) == 0
-
-    next_samples = (0x9, 0xA, 0xC, 0x0, 0x4, 0x6, 0xE, 0xD)
-    for address, sample in enumerate(next_samples):
-        status = await tick(dut, channels=sample)
-        assert status == ((DONE | next_samples[0]) if address == 7 else 0)
-    await read_capture(dut, next_samples)
+            trigger_sample = (rng.randrange(8) << 1) | (1 - falling)
+            assert await tick(dut, channels=trigger_sample, falling=1 - falling) == 0
+            post = [rng.randrange(16) for _ in range(7)]
+            expected = history[-8:] + [trigger_sample] + post
+            for index, sample in enumerate(post, start=1):
+                # ARM during capture must be ignored, even when held into DONE.
+                status = await tick(dut, channels=sample, arm=1, address=8)
+                assert status == ((DONE | trigger_sample) if index == 7 else 0)
+            assert await tick(dut, channels=0xF, arm=1, address=15) == (DONE | post[-1])
+            await read_capture(dut, expected)
+            assert await tick(dut) == (DONE | expected[0])
 
 
 @cocotb.test()
-async def test_reset_aborts_partial_capture(dut):
+async def test_reset_and_first_eligible_edge(dut):
     await reset(dut)
-    assert await tick(dut, arm=1) == 0
-    assert await tick(dut, channels=0x1) == 0
-    assert await tick(dut, channels=0x2) == 0
+    for _ in range(2):
+        assert await tick(dut, channels=1) == 0
+        assert await tick(dut, channels=0) == 0
 
+    # CH0 rises with ARM and stays high through prefill. A high level alone
+    # does not trigger once the eight preceding samples become valid.
+    assert await tick(dut, channels=1, arm=1) == 0
+    for index in range(8):
+        assert await tick(dut, channels=1, arm=1) == (READY if index == 7 else 0)
+    assert await tick(dut, channels=1) == READY
+    assert await tick(dut, channels=0) == READY
+    assert await tick(dut, channels=1) == 0
+
+    # Synchronous reset aborts the partial capture.
     await reset(dut)
-    for _ in range(8):
-        assert await tick(dut, channels=0x1) == 0
-        assert await tick(dut, channels=0x0) == 0
+    for index in range(16):
+        assert await tick(dut, channels=index) == 0
 
     assert await tick(dut, arm=1) == 0
-    for address, sample in enumerate(DEMO_SAMPLES):
-        status = await tick(dut, channels=sample, address=7)
-        assert status == ((DONE | DEMO_SAMPLES[7]) if address == 7 else 0)
+    expected = [0x0, 0x2, 0x4, 0x6, 0x8, 0xA, 0xC, 0xE,
+                0xF, 0xA, 0x3, 0x1, 0x8, 0x5, 0xC, 0x2]
+    for index, sample in enumerate(expected):
+        status = await tick(dut, channels=sample, address=15)
+        expected_status = {7: READY, 15: DONE | expected[15]}.get(index, 0)
+        assert status == expected_status
+    await read_capture(dut, expected)
 
-    # An asserted reset has no effect on the frozen output before a rising edge.
-    dut.clk.value = 0
     dut.rst_n.value = 0
     await Timer(20, unit="ns")
-    assert int(dut.uo_out.value) == (DONE | DEMO_SAMPLES[7])
+    assert int(dut.uo_out.value) == (DONE | expected[0])
     assert await tick(dut) == 0
