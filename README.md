@@ -1,6 +1,11 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# 4-Channel Triggered Logic Analyzer
+
+Eight clocked samples of four digital inputs, captured on a CH0 rising edge.
+The sample at the selected address can be read after capture completes.
+
+Run the RTL simulation with `cd test && make -B` with Icarus Verilog and cocotb available.
 
 - [Read the documentation for project](docs/info.md)
 

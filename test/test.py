@@ -1,82 +1,96 @@
-# SPDX-FileCopyrightText: © 2024 Tiny Tapeout
 # SPDX-License-Identifier: Apache-2.0
 
 import cocotb
 from cocotb.triggers import Timer
 
-N = 4
-MASK = (1 << N) - 1
-SIGN = 1 << (N - 1)
-
-ADD, SUB, AND, OR, XOR, CMP, LSL, LSR = range(8)
+DONE = 1 << 4
+DEMO_SAMPLES = (0x1, 0x2, 0x6, 0x4, 0xF, 0x8, 0xA, 0x3)
 
 
-def model(a, b, op):
-    """Return (result, carry, zero, neg, ov) as the ALU should produce them."""
-    carry = 0
-    ov = 0
-    flag_val = 0
+def inputs(channels=0, arm=0, address=0):
+    return (address << 5) | (arm << 4) | channels
 
-    if op in (ADD, SUB, CMP):
-        b_eff = (~b & MASK) if op in (SUB, CMP) else b
-        cin = 1 if op in (SUB, CMP) else 0
-        full = a + b_eff + cin
-        diff = full & MASK
-        carry = (full >> N) & 1
-        ov = int((a & SIGN) == (b_eff & SIGN) and (diff & SIGN) != (a & SIGN))
-        result = 0 if op == CMP else diff
-        flag_val = diff
-    elif op == AND:
-        result = a & b
-        flag_val = result
-    elif op == OR:
-        result = a | b
-        flag_val = result
-    elif op == XOR:
-        result = a ^ b
-        flag_val = result
-    elif op == LSL:
-        result = (a << 1) & MASK
-        carry = (a >> (N - 1)) & 1
-        flag_val = result
-    else:  # LSR
-        result = a >> 1
-        carry = a & 1
-        flag_val = result
 
-    zero = int(flag_val == 0)
-    neg = (flag_val >> (N - 1)) & 1
-    return result, carry, zero, neg, ov
+async def tick(dut, channels=0, arm=0, address=0):
+    dut.clk.value = 0
+    dut.ui_in.value = inputs(channels, arm, address)
+    await Timer(20, unit="ns")
+    dut.clk.value = 1
+    await Timer(20, unit="ns")
+    return int(dut.uo_out.value)
+
+
+async def reset(dut):
+    dut.ena.value = 1
+    dut.uio_in.value = 0
+    dut.rst_n.value = 0
+    assert await tick(dut) == 0
+    dut.rst_n.value = 1
+    await Timer(20, unit="ns")
+    assert int(dut.uio_oe.value) == 0
+    assert int(dut.uio_out.value) == 0
+
+
+async def read_capture(dut, expected):
+    dut.clk.value = 0
+    for address, sample in reversed(list(enumerate(expected))):
+        dut.ui_in.value = inputs(address=address)
+        await Timer(20, unit="ns")
+        assert int(dut.uo_out.value) == (DONE | sample), f"Wrong sample at address {address}"
 
 
 @cocotb.test()
-async def test_alu_exhaustive(dut):
-    dut._log.info("Start")
-    dut.ena.value = 1
-    dut.rst_n.value = 1
+async def test_trigger_capture_and_rearm(dut):
+    await reset(dut)
+
+    # A rise on the same edge as ARM does not start the recording.
+    assert await tick(dut, channels=0x1, arm=1) == 0
+    for _ in range(3):
+        assert await tick(dut, channels=0xF, arm=1) == 0
+
+    assert await tick(dut, channels=0x8, arm=1) == 0
+    for address, sample in enumerate(DEMO_SAMPLES):
+        # A second ARM edge while capturing must be ignored.
+        arm = int(address != 1)
+        status = await tick(dut, channels=sample, arm=arm, address=0)
+        expected = (DONE | DEMO_SAMPLES[0]) if address == 7 else 0
+        assert status == expected, f"Unexpected output after capturing sample {address}"
+
+    # Continued clocks and a held ARM must not overwrite the record.
+    for channels in (0xF, 0x0, 0xF):
+        assert await tick(dut, channels=channels, arm=1) == (DONE | DEMO_SAMPLES[0])
+    await read_capture(dut, DEMO_SAMPLES)
+
+    assert await tick(dut, channels=0, arm=0) == (DONE | DEMO_SAMPLES[0])
+    assert await tick(dut, channels=0, arm=1) == 0
+
+    next_samples = (0x9, 0xA, 0xC, 0x0, 0x4, 0x6, 0xE, 0xD)
+    for address, sample in enumerate(next_samples):
+        status = await tick(dut, channels=sample)
+        assert status == ((DONE | next_samples[0]) if address == 7 else 0)
+    await read_capture(dut, next_samples)
+
+
+@cocotb.test()
+async def test_reset_aborts_partial_capture(dut):
+    await reset(dut)
+    assert await tick(dut, arm=1) == 0
+    assert await tick(dut, channels=0x1) == 0
+    assert await tick(dut, channels=0x2) == 0
+
+    await reset(dut)
+    for _ in range(8):
+        assert await tick(dut, channels=0x1) == 0
+        assert await tick(dut, channels=0x0) == 0
+
+    assert await tick(dut, arm=1) == 0
+    for address, sample in enumerate(DEMO_SAMPLES):
+        status = await tick(dut, channels=sample, address=7)
+        assert status == ((DONE | DEMO_SAMPLES[7]) if address == 7 else 0)
+
+    # An asserted reset has no effect on the frozen output before a rising edge.
     dut.clk.value = 0
-
-    errors = 0
-    for op in range(8):
-        for a in range(16):
-            for b in range(16):
-                dut.ui_in.value = a | (b << 4)
-                dut.uio_in.value = op
-                await Timer(10, units="ns")
-
-                out = int(dut.uo_out.value)
-                got = (
-                    out & 0xF,
-                    (out >> 4) & 1,
-                    (out >> 5) & 1,
-                    (out >> 6) & 1,
-                    (out >> 7) & 1,
-                )
-                exp = model(a, b, op)
-                if got != exp:
-                    errors += 1
-                    dut._log.error(
-                        f"op={op} a={a:04b} b={b:04b}: got (res,C,Z,N,V)={got}, expected {exp}"
-                    )
-
-    assert errors == 0, f"{errors} mismatches"
+    dut.rst_n.value = 0
+    await Timer(20, unit="ns")
+    assert int(dut.uo_out.value) == (DONE | DEMO_SAMPLES[7])
+    assert await tick(dut) == 0
