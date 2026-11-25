@@ -38,6 +38,7 @@ jobs:
         uses: TinyTapeout/tt-gds-action/gl_test@ttsky26e
 
   prepare_viewer:
+    if: github.ref != 'refs/heads/study/ts32-route-repair'
     needs: gds
     runs-on: ubuntu-24.04
     outputs:
