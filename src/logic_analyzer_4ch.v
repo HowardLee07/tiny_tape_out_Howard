@@ -87,7 +87,17 @@ module logic_analyzer_4ch (
 
     assign ready_to_trigger = (state == WAIT_TRIGGER) && (history_count == 4'd8);
     assign done = (state == READY);
-    assign rd_data = done ? samples[physical_rd_addr] : 4'b0;
+    // Read one word from each bank, then select the bank by its upper bits.
+    wire [15:0] bank_words;
+    genvar bank;
+    generate
+        for (bank = 0; bank < 4; bank = bank + 1) begin : read_bank
+            localparam [1:0] BANK_ID = bank;
+            assign bank_words[bank*4 +: 4] =
+                samples[{BANK_ID, physical_rd_addr[1:0]}];
+        end
+    endgenerate
+    assign rd_data = done ? bank_words[{physical_rd_addr[3:2], 2'b00} +: 4] : 4'b0;
 endmodule
 
 `default_nettype wire

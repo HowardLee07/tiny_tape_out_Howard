@@ -1,0 +1,3 @@
+run,setup_ws_ns,setup_corner,setup_tns_ns,hold_ws_ns,hold_corner,hold_tns_ns,stdcells,stdcell_area_um2,core_area_um2,slew_violations,fanout_violations,cap_violations,route_drc_errors,magic_drc_errors,lvs_errors,stdcell_util_pct
+canonical-44818237359,4.957389,max_ss_100C_1v60,0,0.115527,min_ff_n40C_1v95,0,669,5748.01,16493.3,40,1,0,0,0,0,34.8506
+workshop-44815488059,4.957389,max_ss_100C_1v60,0,0.115527,min_ff_n40C_1v95,0,669,5748.01,16493.3,40,1,0,0,0,0,34.8506

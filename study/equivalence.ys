@@ -1,0 +1,17 @@
+read_verilog baseline.v
+prep -top logic_analyzer_4ch -flatten
+memory_map
+opt
+rename logic_analyzer_4ch gold
+design -stash baseline
+read_verilog candidate.v
+prep -top logic_analyzer_4ch -flatten
+memory_map
+opt
+rename logic_analyzer_4ch gate
+design -copy-from baseline gold
+equiv_make gold gate equiv
+hierarchy -top equiv
+equiv_simple
+equiv_induct -seq 4
+equiv_status -assert
