@@ -1,10 +1,10 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# TinyScope-16
+# TinyScope-32
 
-A four-channel logic analyzer with a 16-sample circular buffer and selectable
-CH0 rising- or falling-edge trigger. Indexed readout returns eight samples
-before the trigger, the trigger sample, and seven samples after it.
+A four-channel logic analyzer with programmable pattern triggering and a
+32-word circular buffer. Read addresses 0–15 return the pre-trigger history,
+address 16 returns the trigger sample, and addresses 17–31 return the tail.
 
 Run the RTL simulation with `cd test && make -B` with Icarus Verilog and cocotb available.
 

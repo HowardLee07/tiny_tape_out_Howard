@@ -1,52 +1,37 @@
 ## How it works
 
-TinyScope-16 samples four digital inputs on each rising edge of `clk`. A
-sampled rising edge on ARM in idle or after DONE starts a new capture. At
-that edge, the analyzer saves TRIGGER_FALLING (0 for rising, 1 for falling).
-The first sample is taken on the following clock edge.
+TinyScope-32 captures four digital inputs on rising clock edges. A rising ARM
+sample in idle or after DONE latches the trigger mask from UIO[7:4] and value
+from UIO[3:0]. The following rising edge writes the first sample. Hold all
+sampled inputs stable around the active edge. Reset is synchronous, active low,
+and aborts an acquisition or invalidates a frozen record.
 
-The analyzer continuously writes samples to a 16-entry circular buffer.
-After the first eight writes, READY_TO_TRIGGER goes high. A CH0 transition of
-the configured polarity can trigger starting at the ninth sample edge.
-Transitions during prefill are ignored. The trigger edge is sampled along
-with the other three channels. Seven more clock edges complete the capture,
-which freezes the buffer and asserts DONE.
+Each mask bit selects a channel to compare with its corresponding value bit.
+After 16 writes, READY_TO_TRIGGER goes high. The next sampled transition from
+a nonmatching word to a matching word triggers. A match held through prefill
+must first clear and return. A zero mask disables triggering for that capture;
+use reset to abort. With mask 1, value 1 selects a CH0 rising edge and value 0
+selects a falling edge. Changes to the configuration pins after ARM have no
+effect on the active capture.
 
-| Logical read address | Contents |
-| --- | --- |
-| 0–7 | Eight samples before the trigger, oldest first |
-| 8 | Trigger sample |
-| 9–15 | Seven samples after the trigger |
-
-At the trigger, the analyzer saves the physical address of the oldest
-sample. Readout adds the logical address to this saved address modulo 16.
-Changing RD_ADDR updates the four RD_CH outputs without a clock edge while
-DONE is high. RD_CH is zero while DONE is low.
-
-ARM edges are ignored while waiting for a trigger or collecting post-trigger
-samples. Hold ARM low for a clock edge before raising it for another capture.
-Reset is synchronous and active low. It aborts an acquisition and invalidates
-the previous record when sampled. Keep input values stable around the
-sampling edges for deterministic capture.
+The circular buffer retains the last 16 samples before the trigger. The
+trigger sample and 15 subsequent samples complete the record. DONE then
+goes high and the buffer freezes. While DONE is high, drive the five-bit
+logical read address on {UIO[1:0], UI[7:5]}. The oldest word is at address
+0, the trigger at 16 and the newest word at 31. Outputs UO[3:0] update
+asynchronously with the read address and are zero before DONE. UO[4] is DONE,
+UO[5] is READY_TO_TRIGGER and all UIO pins are inputs. ARM edges during
+acquisition are ignored. To re-arm after DONE, ensure ARM has been sampled
+low and then raise it with the desired configuration on UIO.
 
 ## How to test
 
-1. Hold ARM, CH0 and TRIGGER_FALLING low. Apply reset for one rising clock
-   edge and then release it.
-2. Raise ARM for one clock edge. Lower ARM and drive the following words,
-   one per rising clock edge. CH0 is the least significant bit.
-
-   | Sample phase | Read address | Input words in hex |
-   | --- | --- | --- |
-   | Before trigger | 0–7 | 0, 2, 4, 6, 8, A, C, E |
-   | Trigger | 8 | F |
-   | After trigger | 9–15 | A, 3, 1, 8, 5, C, 2 |
-
-3. Check that READY_TO_TRIGGER goes high after the eighth word and returns
-   low on the ninth word, which triggers the capture. DONE goes high after
-   the sixteenth word.
-4. Read all sixteen addresses and compare them with the table. Drive
-   RD_ADDR[2:0] on UI[7:5] and RD_ADDR[3] on UIO[0]. The sample appears on
-   UO[3:0], with DONE on UO[4] and READY_TO_TRIGGER on UO[5].
-5. For falling-edge mode, set TRIGGER_FALLING on UIO[1] high before ARM and
-   invert CH0 in each word in the table (XOR each word with 1).
+1. Clock once with reset low and ARM low, then release reset. Set UIO to
+   0x51 and raise ARM for one rising edge. This selects CH2=0 and CH0=1.
+2. Lower ARM. Drive the word 0x4 for 16 rising edges. READY_TO_TRIGGER
+   goes high after the sixteenth. Drive 0xB on the next edge to trigger.
+3. Drive the words 0x0 through 0xE in order on the next 15 rising edges.
+   DONE goes high on the last one.
+4. Read addresses 0 through 31. Expect sixteen copies of 0x4, then 0xB at
+   address 16, then 0x0 through 0xE. Read address 31 with UIO[1:0]=3 and
+   UI[7:5]=7. UO[5:0] should then be 0x1E.

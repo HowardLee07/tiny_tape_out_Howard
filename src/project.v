@@ -16,8 +16,9 @@ module tt_um_howardlee_logic_analyzer_4ch (
         .rst_n            (rst_n),
         .arm              (ui_in[4]),
         .channels         (ui_in[3:0]),
-        .trigger_falling  (uio_in[1]),
-        .rd_addr          ({uio_in[0], ui_in[7:5]}),
+        .trigger_mask     (uio_in[7:4]),
+        .trigger_value    (uio_in[3:0]),
+        .rd_addr          ({uio_in[1:0], ui_in[7:5]}),
         .rd_data          (uo_out[3:0]),
         .done             (uo_out[4]),
         .ready_to_trigger (uo_out[5])
@@ -27,7 +28,7 @@ module tt_um_howardlee_logic_analyzer_4ch (
     assign uio_out     = 8'b0;
     assign uio_oe      = 8'b0;
 
-    wire _unused = &{ena, uio_in[7:2], 1'b0};
+    wire _unused = &{ena, 1'b0};
 endmodule
 
 `default_nettype wire

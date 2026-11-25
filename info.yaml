@@ -1,8 +1,8 @@
 project:
-  title: "TinyScope-16"
+  title: "TinyScope-32"
   author: "Howard Lee"
   discord: ""
-  description: "Four-channel logic analyzer with selectable CH0 edge trigger and 16-sample circular buffer"
+  description: "Four-channel logic analyzer with programmable mask/value trigger and 32-sample circular buffer"
   language: "Verilog"
   clock_hz: 1000000
   tiles: "1x2"
@@ -28,13 +28,13 @@ pinout:
   uo[5]: "READY_TO_TRIGGER"
   uo[6]: ""
   uo[7]: ""
-  uio[0]: "RD_ADDR3"
-  uio[1]: "TRIGGER_FALLING"
-  uio[2]: ""
-  uio[3]: ""
-  uio[4]: ""
-  uio[5]: ""
-  uio[6]: ""
-  uio[7]: ""
+  uio[0]: "TRIG_VALUE0 / RD_ADDR3"
+  uio[1]: "TRIG_VALUE1 / RD_ADDR4"
+  uio[2]: "TRIG_VALUE2"
+  uio[3]: "TRIG_VALUE3"
+  uio[4]: "TRIG_MASK0"
+  uio[5]: "TRIG_MASK1"
+  uio[6]: "TRIG_MASK2"
+  uio[7]: "TRIG_MASK3"
 
 yaml_version: 6

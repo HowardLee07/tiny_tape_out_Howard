@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-
 from random import Random
 
 import cocotb
@@ -9,14 +8,14 @@ DONE = 1 << 4
 READY = 1 << 5
 
 
-def drive_inputs(dut, channels=0, arm=0, address=0, falling=0):
+def drive(dut, channels=0, arm=0, address=0, uio=None):
     dut.ui_in.value = ((address & 7) << 5) | (arm << 4) | channels
-    dut.uio_in.value = (falling << 1) | (address >> 3)
+    dut.uio_in.value = address >> 3 if uio is None else uio
 
 
 async def tick(dut, **inputs):
     dut.clk.value = 0
-    drive_inputs(dut, **inputs)
+    drive(dut, **inputs)
     await Timer(20, unit="ns")
     dut.clk.value = 1
     await Timer(20, unit="ns")
@@ -28,85 +27,82 @@ async def reset(dut):
     dut.rst_n.value = 0
     assert await tick(dut) == 0
     dut.rst_n.value = 1
-    await Timer(20, unit="ns")
     assert int(dut.uio_oe.value) == 0
     assert int(dut.uio_out.value) == 0
 
 
+async def arm_capture(dut, mask, value, channels=0):
+    assert await tick(dut, channels=channels, arm=1, uio=(mask << 4) | value) == 0
+
+
 async def read_capture(dut, expected):
     dut.clk.value = 0
-    # Read addresses in reverse order without clocking the capture engine.
-    for address in range(15, -1, -1):
-        drive_inputs(dut, address=address)
+    for address in reversed(range(32)):
+        drive(dut, address=address)
         await Timer(20, unit="ns")
-        assert int(dut.uo_out.value) == (DONE | expected[address]), (
-            f"Wrong sample at address {address}, expected {expected[address]:x}"
-        )
+        assert int(dut.uo_out.value) == DONE | expected[address], f"Address {address}"
 
 
 @cocotb.test()
-async def test_both_edges_at_every_ring_address(dut):
+async def test_patterns_and_wraparound(dut):
+    """Exercise every nonzero mask/value pair and every physical trigger address."""
     await reset(dut)
-    rng = Random(16)
-
-    for falling in (0, 1):
-        # Offsets 8 through 23 cover every trigger write address modulo 16.
-        for history_length in range(8, 24):
-            assert await tick(dut, arm=1, falling=falling) == 0
+    rng = Random(32)
+    for mask in range(1, 16):
+        for value in range(16):
+            matching = [s for s in range(16) if s & mask == value & mask]
+            outside = [s for s in range(16) if s not in matching]
+            await arm_capture(dut, mask, value)
             history = []
-            for index in range(history_length):
-                # During prefill, deliberately present qualifying edges. After
-                # prefill, hold CH0 opposite the requested trigger level.
-                ch0 = (index % 2) ^ falling if index < 7 else falling
-                sample = (rng.randrange(8) << 1) | ch0
+            # Sweep contiguous trigger addresses with multiple revolutions of the buffer.
+            length = 16 + (((mask - 1) * 16 + value) % 80)
+            for index in range(length):
+                sample = rng.randrange(16) if index < 15 else rng.choice(outside)
                 history.append(sample)
-                status = await tick(dut, channels=sample, falling=1 - falling)
-                assert status == (READY if index >= 7 else 0)
-
-            trigger_sample = (rng.randrange(8) << 1) | (1 - falling)
-            assert await tick(dut, channels=trigger_sample, falling=1 - falling) == 0
-            post = [rng.randrange(16) for _ in range(7)]
-            expected = history[-8:] + [trigger_sample] + post
-            for index, sample in enumerate(post, start=1):
-                # ARM during capture must be ignored, even when held into DONE.
-                status = await tick(dut, channels=sample, arm=1, address=8)
-                assert status == ((DONE | trigger_sample) if index == 7 else 0)
-            assert await tick(dut, channels=0xF, arm=1, address=15) == (DONE | post[-1])
-            await read_capture(dut, expected)
-            assert await tick(dut) == (DONE | expected[0])
+                # Toggle configuration pins and pulse ARM while waiting.
+                status = await tick(dut, channels=sample, arm=int(index == 8), uio=rng.randrange(256))
+                assert status == (READY if index >= 15 else 0), (mask, value, index)
+            trigger = rng.choice(matching)
+            assert await tick(dut, channels=trigger) == 0
+            post = [rng.randrange(16) for _ in range(15)]
+            for index, sample in enumerate(post):
+                status = await tick(dut, channels=sample, arm=1, address=16)
+                assert status == (DONE | trigger if index == 14 else 0)
+            assert await tick(dut, arm=1, address=31) == DONE | post[-1]
+            await read_capture(dut, history[-16:] + [trigger] + post)
+            assert await tick(dut) == DONE | history[-16]
 
 
 @cocotb.test()
-async def test_reset_and_first_eligible_edge(dut):
+async def test_masked_edge_and_reset(dut):
     await reset(dut)
-    for _ in range(2):
-        assert await tick(dut, channels=1) == 0
-        assert await tick(dut, channels=0) == 0
+    # An all-zero mask never triggers, even after more than two full wraps.
+    await arm_capture(dut, 0, 15)
+    for i in range(80):
+        assert await tick(dut, channels=i % 16) == (READY if i >= 15 else 0)
+    await reset(dut)
 
-    # CH0 rises with ARM and stays high through prefill. A high level alone
-    # does not trigger once the eight preceding samples become valid.
-    assert await tick(dut, channels=1, arm=1) == 0
-    for index in range(8):
-        assert await tick(dut, channels=1, arm=1) == (READY if index == 7 else 0)
-    assert await tick(dut, channels=1) == READY
-    assert await tick(dut, channels=0) == READY
+    # Hold selected bits at 01 from ARM through prefill. Unselected bits toggle.
+    await arm_capture(dut, 0b0101, 0b0001, channels=1)
+    for i in range(32):
+        assert await tick(dut, channels=1 | ((i << 1) & 0b1010)) == (READY if i >= 15 else 0)
+    assert await tick(dut, channels=5) == READY
     assert await tick(dut, channels=1) == 0
+    for _ in range(14):
+        assert await tick(dut) == 0
+    await reset(dut)  # abort just before DONE
+    for i in range(32):
+        assert await tick(dut, channels=i % 16) == 0
 
-    # Synchronous reset aborts the partial capture.
-    await reset(dut)
-    for index in range(16):
-        assert await tick(dut, channels=index) == 0
-
-    assert await tick(dut, arm=1) == 0
-    expected = [0x0, 0x2, 0x4, 0x6, 0x8, 0xA, 0xC, 0xE,
-                0xF, 0xA, 0x3, 0x1, 0x8, 0x5, 0xC, 0x2]
-    for index, sample in enumerate(expected):
-        status = await tick(dut, channels=sample, address=15)
-        expected_status = {7: READY, 15: DONE | expected[15]}.get(index, 0)
-        assert status == expected_status
-    await read_capture(dut, expected)
-
+    # Re-arm, capture on the first eligible edge and reset a frozen record.
+    await arm_capture(dut, 1, 0)
+    for i in range(16):
+        assert await tick(dut, channels=3) == (READY if i == 15 else 0)
+    assert await tick(dut, channels=2) == 0
+    for i in range(15):
+        assert await tick(dut, channels=i, address=31) == (DONE | 14 if i == 14 else 0)
+    await read_capture(dut, [3] * 16 + [2] + list(range(15)))
     dut.rst_n.value = 0
     await Timer(20, unit="ns")
-    assert int(dut.uo_out.value) == (DONE | expected[0])
+    assert int(dut.uo_out.value) == DONE | 3
     assert await tick(dut) == 0
